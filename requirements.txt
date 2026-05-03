@@ -1,0 +1,7 @@
+python-telegram-bot==20.7
+instagrapi==2.1.2
+Pillow>=8.1.1
+requests
+sqlalchemy
+python-dotenv
+aiohttp
