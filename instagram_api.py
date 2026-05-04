@@ -1,6 +1,7 @@
 import json
 import os
 import time
+import random
 import logging
 from instagrapi import Client
 from instagrapi.exceptions import (
@@ -15,12 +16,66 @@ from database import SessionLocal, InstagramAccount, TaskLog
 
 logger = logging.getLogger(__name__)
 
+# Real Android qurilmalar (Instagram ban qilmasligi uchun)
+DEVICES = [
+    {
+        "app_version": "269.0.0.18.75",
+        "android_version": 26,
+        "android_release": "8.0.0",
+        "dpi": "480dpi",
+        "resolution": "1080x1920",
+        "manufacturer": "OnePlus",
+        "device": "ONEPLUS A3003",
+        "model": "OnePlus3",
+        "cpu": "qcom",
+        "version_code": "314665256",
+    },
+    {
+        "app_version": "269.0.0.18.75",
+        "android_version": 28,
+        "android_release": "9.0",
+        "dpi": "560dpi",
+        "resolution": "1440x2960",
+        "manufacturer": "samsung",
+        "device": "SM-G965F",
+        "model": "star2qltecs",
+        "cpu": "samsungexynos9810",
+        "version_code": "314665256",
+    },
+    {
+        "app_version": "269.0.0.18.75",
+        "android_version": 29,
+        "android_release": "10.0",
+        "dpi": "420dpi",
+        "resolution": "1080x2340",
+        "manufacturer": "xiaomi",
+        "device": "Mi 9",
+        "model": "cepheus",
+        "cpu": "qcom",
+        "version_code": "314665256",
+    },
+]
+
+
+def build_client() -> Client:
+    """Tasodifiy real qurilma sozlamalari bilan Client yaratish."""
+    cl = Client()
+    cl.delay_range = [2, 5]
+    device = random.choice(DEVICES)
+    cl.set_device(device)
+    cl.set_user_agent(
+        f"Instagram {device['app_version']} Android "
+        f"({device['android_version']}/{device['android_release']}; "
+        f"{device['dpi']}; {device['resolution']}; "
+        f"{device['manufacturer']}; {device['model']}; "
+        f"{device['device']}; {device['cpu']}; en_US; {device['version_code']})"
+    )
+    return cl
+
 
 class InstagramBot:
     def __init__(self, account_id: int = None):
-        self.cl = Client()
-        # instagrapi so'rovlar orasiga kichik delay qo'shish (ban oldini olish)
-        self.cl.delay_range = [1, 3]
+        self.cl = build_client()
         self.db = SessionLocal()
         self.account = None
 
@@ -32,30 +87,34 @@ class InstagramBot:
             )
             if self.account and self.account.session_data:
                 try:
-                    self.cl.set_settings(json.loads(self.account.session_data))
-                    self.cl.login(self.account.username, self.account.password)
+                    settings = json.loads(self.account.session_data)
+                    self.cl.set_settings(settings)
+                    self.cl.get_timeline_feed()
                     self.account.status = "active"
                     self.db.commit()
                     logger.info(f"Session yuklandi: {self.account.username}")
                 except LoginRequired:
-                    logger.warning(f"Session eskirgan: {self.account.username}, qayta login qilinmoqda...")
+                    logger.warning(f"Session eskirgan: {self.account.username}")
                     self._relogin()
                 except Exception as e:
-                    logger.error(f"Session yuklab bo'lmadi ({self.account.username}): {e}")
-                    self.account.status = "session_expired"
-                    self.db.commit()
+                    logger.error(f"Session xatosi ({self.account.username}): {e}")
+                    self._relogin()
 
     def _relogin(self):
         """Session eskirganda qayta login qilish."""
         if not self.account:
             return False
         try:
-            self.cl.set_settings({})
+            old_settings = json.loads(self.account.session_data or "{}")
+            self.cl = build_client()
+            # Qurilma UUID larini saqlab qolish
+            if old_settings.get("uuids"):
+                self.cl.set_settings({"uuids": old_settings["uuids"]})
             self.cl.login(self.account.username, self.account.password)
             self.account.session_data = json.dumps(self.cl.get_settings())
             self.account.status = "active"
             self.db.commit()
-            logger.info(f"Qayta login muvaffaqiyatli: {self.account.username}")
+            logger.info(f"Qayta login ok: {self.account.username}")
             return True
         except Exception as e:
             logger.error(f"Qayta login xatosi ({self.account.username}): {e}")
@@ -66,19 +125,54 @@ class InstagramBot:
     def login(self, username: str, password: str):
         """Yangi akkauntga login qilish."""
         try:
+            self.cl = build_client()
             self.cl.login(username, password)
             session_data = json.dumps(self.cl.get_settings())
-            logger.info(f"Login muvaffaqiyatli: {username}")
+            logger.info(f"Login ok: {username}")
             return True, session_data
         except BadPassword:
-            return False, "Parol noto'g'ri"
+            # Boshqa qurilma bilan qayta urinish
+            try:
+                time.sleep(3)
+                self.cl = build_client()
+                self.cl.login(username, password)
+                session_data = json.dumps(self.cl.get_settings())
+                return True, session_data
+            except BadPassword:
+                return False, "Parol noto'g'ri. Instagram parolingizni tekshiring."
+            except ChallengeRequired:
+                return False, (
+                    "⚠️ Instagram tekshiruvi talab qilmoqda.\n\n"
+                    "Instagram ilovasini oching → bildirishnomani tasdiqlang → qaytadan urinib ko'ring."
+                )
+            except Exception as e:
+                return False, f"Login xatosi: {str(e)}"
         except ChallengeRequired:
-            return False, "Instagram tekshiruvi talab qilinmoqda (challenge)"
+            return False, (
+                "⚠️ Instagram hisobingizni tasdiqlashni talab qilmoqda.\n\n"
+                "1️⃣ Instagram ilovasini oching\n"
+                "2️⃣ Kelib tushgan bildirishnomani tasdiqlang\n"
+                "3️⃣ So'ng qaytadan urinib ko'ring"
+            )
         except TwoFactorRequired:
-            return False, "Ikki bosqichli tasdiqlash talab qilinmoqda"
+            return False, (
+                "🔐 Ikki bosqichli tasdiqlash (2FA) yoqilgan.\n\n"
+                "Instagram → Sozlamalar → Xavfsizlik → 2FA ni o'chiring,\n"
+                "so'ng qaytadan urinib ko'ring."
+            )
         except Exception as e:
             logger.error(f"Login xatosi ({username}): {e}")
-            return False, str(e)
+            err = str(e).lower()
+            if "400" in str(e) or "bad_password" in err:
+                return False, "Parol noto'g'ri. Instagram parolingizni tekshiring."
+            if "checkpoint" in err or "challenge" in err:
+                return False, (
+                    "⚠️ Instagram hisobingizni tasdiqlashni talab qilmoqda.\n"
+                    "Instagram ilovasini oching va tasdiqlang."
+                )
+            if "wait" in err or "few minutes" in err:
+                return False, "Instagram vaqtincha blokladi. 10 daqiqa kuting."
+            return False, f"Xato: {str(e)}"
 
     def check_account_status(self):
         """Akkaunt holatini tekshirish."""
@@ -90,7 +184,6 @@ class InstagramBot:
             self.db.commit()
             return "active", "Akkaunt faol"
         except LoginRequired:
-            logger.warning(f"Login talab qilinmoqda: {self.account.username}")
             relogin_ok = self._relogin()
             if relogin_ok:
                 return "active", "Qayta login muvaffaqiyatli"
@@ -124,9 +217,8 @@ class InstagramBot:
             if result:
                 self._log_task("like", media_id, True, "Like bosildi")
                 return True, "Like bosildi"
-            else:
-                self._log_task("like", media_id, False, "Like bosilmadi")
-                return False, "Like bosilmadi"
+            self._log_task("like", media_id, False, "Like bosilmadi")
+            return False, "Like bosilmadi"
         except MediaNotFound:
             return False, "Media topilmadi"
         except LoginRequired:
@@ -209,3 +301,4 @@ class InstagramBot:
             self.db.close()
         except Exception as e:
             logger.error(f"DB yopishda xato: {e}")
+                                
