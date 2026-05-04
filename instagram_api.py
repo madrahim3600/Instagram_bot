@@ -107,7 +107,6 @@ class InstagramBot:
         try:
             old_settings = json.loads(self.account.session_data or "{}")
             self.cl = build_client()
-            # Qurilma UUID larini saqlab qolish
             if old_settings.get("uuids"):
                 self.cl.set_settings({"uuids": old_settings["uuids"]})
             self.cl.login(self.account.username, self.account.password)
@@ -131,7 +130,6 @@ class InstagramBot:
             logger.info(f"Login ok: {username}")
             return True, session_data
         except BadPassword:
-            # Boshqa qurilma bilan qayta urinish
             try:
                 time.sleep(3)
                 self.cl = build_client()
@@ -142,22 +140,22 @@ class InstagramBot:
                 return False, "Parol noto'g'ri. Instagram parolingizni tekshiring."
             except ChallengeRequired:
                 return False, (
-                    "⚠️ Instagram tekshiruvi talab qilmoqda.\n\n"
-                    "Instagram ilovasini oching → bildirishnomani tasdiqlang → qaytadan urinib ko'ring."
+                    "Instagram tekshiruvi talab qilmoqda.\n\n"
+                    "Instagram ilovasini oching va tasdiqlang, keyin qaytadan urinib ko'ring."
                 )
             except Exception as e:
                 return False, f"Login xatosi: {str(e)}"
         except ChallengeRequired:
             return False, (
-                "⚠️ Instagram hisobingizni tasdiqlashni talab qilmoqda.\n\n"
-                "1️⃣ Instagram ilovasini oching\n"
-                "2️⃣ Kelib tushgan bildirishnomani tasdiqlang\n"
-                "3️⃣ So'ng qaytadan urinib ko'ring"
+                "Instagram hisobingizni tasdiqlashni talab qilmoqda.\n\n"
+                "1 Instagram ilovasini oching\n"
+                "2 Kelib tushgan bildirishnomani tasdiqlang\n"
+                "3 So'ng qaytadan urinib ko'ring"
             )
         except TwoFactorRequired:
             return False, (
-                "🔐 Ikki bosqichli tasdiqlash (2FA) yoqilgan.\n\n"
-                "Instagram → Sozlamalar → Xavfsizlik → 2FA ni o'chiring,\n"
+                "Ikki bosqichli tasdiqlash (2FA) yoqilgan.\n\n"
+                "Instagram -> Sozlamalar -> Xavfsizlik -> 2FA ni o'chiring,\n"
                 "so'ng qaytadan urinib ko'ring."
             )
         except Exception as e:
@@ -167,7 +165,7 @@ class InstagramBot:
                 return False, "Parol noto'g'ri. Instagram parolingizni tekshiring."
             if "checkpoint" in err or "challenge" in err:
                 return False, (
-                    "⚠️ Instagram hisobingizni tasdiqlashni talab qilmoqda.\n"
+                    "Instagram hisobingizni tasdiqlashni talab qilmoqda.\n"
                     "Instagram ilovasini oching va tasdiqlang."
                 )
             if "wait" in err or "few minutes" in err:
@@ -175,7 +173,6 @@ class InstagramBot:
             return False, f"Xato: {str(e)}"
 
     def check_account_status(self):
-        """Akkaunt holatini tekshirish."""
         if not self.account:
             return "inactive", "Akkaunt yuklanmagan"
         try:
@@ -194,7 +191,6 @@ class InstagramBot:
             return "error", str(e)
 
     def view_reel(self, media_id: str):
-        """Reelni ko'rish."""
         try:
             self.cl.media_info(media_id)
             self._log_task("view", media_id, True, "Ko'rildi")
@@ -211,7 +207,6 @@ class InstagramBot:
             return False, str(e)
 
     def like_media(self, media_id: str):
-        """Mediaga like bosish."""
         try:
             result = self.cl.media_like(media_id)
             if result:
@@ -233,15 +228,14 @@ class InstagramBot:
             return False, str(e)
 
     def comment_media(self, media_id: str, text: str):
-        """Mediaga izoh qoldirish."""
         if not text or not text.strip():
-            return False, "Izoh matni bo'sh bo'lishi mumkin emas"
+            return False, "Izoh matni bosh bolishi mumkin emas"
         try:
             comment = self.cl.media_comment(media_id, text.strip())
             if comment:
                 self._log_task("comment", media_id, True, f"Izoh: {text[:50]}")
-                return True, "Izoh qo'shildi"
-            return False, "Izoh qo'shilmadi"
+                return True, "Izoh qoshildi"
+            return False, "Izoh qoshilmadi"
         except MediaNotFound:
             return False, "Media topilmadi"
         except LoginRequired:
@@ -256,7 +250,6 @@ class InstagramBot:
             return False, str(e)
 
     def follow_user(self, user_id: str):
-        """Foydalanuvchini kuzatish."""
         try:
             result = self.cl.user_follow(user_id)
             if result:
@@ -272,7 +265,6 @@ class InstagramBot:
             return False, str(e)
 
     def get_media_id_from_url(self, url: str):
-        """URL dan media ID olish."""
         try:
             media_id = self.cl.media_id(self.cl.media_pk_from_url(url))
             return True, media_id
@@ -280,7 +272,6 @@ class InstagramBot:
             return False, str(e)
 
     def _log_task(self, task_type: str, media_id: str, success: bool, message: str):
-        """Vazifa natijasini bazaga yozish."""
         try:
             if self.account:
                 log = TaskLog(
@@ -296,9 +287,8 @@ class InstagramBot:
             logger.error(f"Log yozishda xato: {e}")
 
     def close(self):
-        """DB ulanishini yopish."""
         try:
             self.db.close()
         except Exception as e:
             logger.error(f"DB yopishda xato: {e}")
-                                
+                    
