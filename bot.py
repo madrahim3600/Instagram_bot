@@ -108,8 +108,19 @@ async def add_account_username(update: Update, context: ContextTypes.DEFAULT_TYP
 
 async def add_account_password(update: Update, context: ContextTypes.DEFAULT_TYPE):
     password = update.message.text.strip()
+
+    # username ni delete() DAN OLDIN olib qo'yish
     username = context.user_data.get("ig_username")
 
+    # username yo'q bo'lsa qaytadan so'rash
+    if not username:
+        await update.message.reply_text(
+            "❌ Sessiya xatosi. Qaytadan boshlang — /start"
+        )
+        context.user_data.clear()
+        return ConversationHandler.END
+
+    # Parolni o'chirish (xavfsizlik uchun)
     try:
         await update.message.delete()
     except Exception:
@@ -445,4 +456,4 @@ def main():
 
 if __name__ == "__main__":
     main()
-    
+                
