@@ -1,5 +1,6 @@
 import logging
 import os
+import asyncio
 from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 from telegram.ext import (
     Application,
@@ -22,7 +23,6 @@ logger = logging.getLogger(__name__)
 BOT_TOKEN = os.getenv("BOT_TOKEN", "8766717874:AAFy_4ZCjgOoCER8L54hwFPk9drLYBA1DBY")
 ADMIN_ID = int(os.getenv("ADMIN_ID", "7740552653"))
 
-# ConversationHandler holatlari
 (
     WAITING_USERNAME,
     WAITING_PASSWORD,
@@ -30,8 +30,6 @@ ADMIN_ID = int(os.getenv("ADMIN_ID", "7740552653"))
     WAITING_COMMENT_TEXT,
 ) = range(4)
 
-
-# ─── Yordamchi funksiyalar ────────────────────────────────────────────────────
 
 def is_admin(user_id: int) -> bool:
     return user_id == ADMIN_ID
@@ -49,8 +47,6 @@ def get_main_keyboard(is_admin_user: bool = False):
         buttons.append([InlineKeyboardButton("👑 Admin panel", callback_data="admin_panel")])
     return InlineKeyboardMarkup(buttons)
 
-
-# ─── Asosiy buyruqlar ─────────────────────────────────────────────────────────
 
 async def start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     user = update.effective_user
@@ -83,7 +79,7 @@ async def cancel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     return ConversationHandler.END
 
 
-# ─── Akkaunt qo'shish ─────────────────────────────────────────────────────────
+# ── Akkaunt qo'shish ──────────────────────────────────────────────────────────
 
 async def add_account_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -114,7 +110,6 @@ async def add_account_password(update: Update, context: ContextTypes.DEFAULT_TYP
     password = update.message.text.strip()
     username = context.user_data.get("ig_username")
 
-    # Xabarni o'chirish (xavfsizlik)
     try:
         await update.message.delete()
     except Exception:
@@ -122,13 +117,18 @@ async def add_account_password(update: Update, context: ContextTypes.DEFAULT_TYP
 
     msg = await update.message.reply_text("⏳ Login qilinmoqda, iltimos kuting...")
 
-    bot = InstagramBot()
-    success, result = bot.login(username, password)
+    # Login ni async thread da bajarish (blocking call)
+    loop = asyncio.get_event_loop()
+    bot_ig = InstagramBot()
+
+    def do_login():
+        return bot_ig.login(username, password)
+
+    success, result = await loop.run_in_executor(None, do_login)
 
     if success:
         db = SessionLocal()
         try:
-            # Mavjud akkauntni tekshirish
             existing = db.query(InstagramAccount).filter(
                 InstagramAccount.username == username
             ).first()
@@ -159,16 +159,16 @@ async def add_account_password(update: Update, context: ContextTypes.DEFAULT_TYP
             db.close()
     else:
         await msg.edit_text(
-            f"❌ Login muvaffaqiyatsiz:\n`{result}`\n\nQaytadan urinib ko'ring.",
-            parse_mode="Markdown",
+            f"❌ Login muvaffaqiyatsiz:\n\n{result}\n\nQaytadan urinib ko'ring.",
+            reply_markup=get_main_keyboard(is_admin(update.effective_user.id)),
         )
 
-    bot.close()
+    bot_ig.close()
     context.user_data.clear()
     return ConversationHandler.END
 
 
-# ─── Akkauntlar ro'yxati ──────────────────────────────────────────────────────
+# ── Akkauntlar ro'yxati ───────────────────────────────────────────────────────
 
 async def list_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -200,20 +200,18 @@ async def list_accounts(update: Update, context: ContextTypes.DEFAULT_TYPE):
                 lines.append(f"{status_emoji} `{acc.username}` — {acc.status} (ID: {acc.id})")
             text = "\n".join(lines)
 
-        if query:
-            await query.message.reply_text(text, parse_mode="Markdown")
-        else:
-            await update.message.reply_text(text, parse_mode="Markdown")
+        send = query.message.reply_text if query else update.message.reply_text
+        await send(text, parse_mode="Markdown")
     finally:
         db.close()
 
 
-# ─── Media amallar ────────────────────────────────────────────────────────────
+# ── Media amallar ─────────────────────────────────────────────────────────────
 
 async def media_action_start(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
     await query.answer()
-    action = query.data  # view_reel, like_media, comment_media
+    action = query.data
     context.user_data["media_action"] = action
 
     action_text = {
@@ -237,10 +235,15 @@ async def media_action_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
 
     db = SessionLocal()
     try:
-        accounts = db.query(InstagramAccount).filter(
-            InstagramAccount.telegram_user_id == user_id,
-            InstagramAccount.status == "active",
-        ).all()
+        if is_admin(update.effective_user.id):
+            accounts = db.query(InstagramAccount).filter(
+                InstagramAccount.status == "active"
+            ).all()
+        else:
+            accounts = db.query(InstagramAccount).filter(
+                InstagramAccount.telegram_user_id == user_id,
+                InstagramAccount.status == "active",
+            ).all()
 
         if not accounts:
             await update.message.reply_text(
@@ -251,40 +254,41 @@ async def media_action_url(update: Update, context: ContextTypes.DEFAULT_TYPE):
             return ConversationHandler.END
 
         account = accounts[0]
+        account_id = account.id
     finally:
         db.close()
 
     context.user_data["media_url"] = url
-    context.user_data["account_id"] = account.id
+    context.user_data["account_id"] = account_id
 
     if action == "comment_media":
         await update.message.reply_text("💬 Izoh matnini kiriting:")
         return WAITING_COMMENT_TEXT
 
-    # view yoki like
     msg = await update.message.reply_text("⏳ Amal bajarilmoqda...")
-    bot = InstagramBot(account_id=account.id)
-    try:
-        ok, media_id = bot.get_media_id_from_url(url)
-        if not ok:
-            await msg.edit_text(f"❌ URL dan media ID olib bo'lmadi: {media_id}")
-            return ConversationHandler.END
 
-        if action == "view_reel":
-            success, message = bot.view_reel(media_id)
-        elif action == "like_media":
-            success, message = bot.like_media(media_id)
-        else:
-            success, message = False, "Noma'lum amal"
+    loop = asyncio.get_event_loop()
 
-        emoji = "✅" if success else "❌"
-        await msg.edit_text(
-            f"{emoji} {message}",
-            reply_markup=get_main_keyboard(is_admin(update.effective_user.id)),
-        )
-    finally:
-        bot.close()
+    def do_action():
+        bot_ig = InstagramBot(account_id=account_id)
+        try:
+            ok, media_id = bot_ig.get_media_id_from_url(url)
+            if not ok:
+                return False, f"URL dan media ID olib bo'lmadi: {media_id}"
+            if action == "view_reel":
+                return bot_ig.view_reel(media_id)
+            elif action == "like_media":
+                return bot_ig.like_media(media_id)
+            return False, "Noma'lum amal"
+        finally:
+            bot_ig.close()
 
+    success, message = await loop.run_in_executor(None, do_action)
+    emoji = "✅" if success else "❌"
+    await msg.edit_text(
+        f"{emoji} {message}",
+        reply_markup=get_main_keyboard(is_admin(update.effective_user.id)),
+    )
     context.user_data.clear()
     return ConversationHandler.END
 
@@ -295,27 +299,30 @@ async def media_action_comment(update: Update, context: ContextTypes.DEFAULT_TYP
     account_id = context.user_data.get("account_id")
 
     msg = await update.message.reply_text("⏳ Izoh qo'shilmoqda...")
-    bot = InstagramBot(account_id=account_id)
-    try:
-        ok, media_id = bot.get_media_id_from_url(url)
-        if not ok:
-            await msg.edit_text(f"❌ URL dan media ID olib bo'lmadi: {media_id}")
-            return ConversationHandler.END
 
-        success, message = bot.comment_media(media_id, comment_text)
-        emoji = "✅" if success else "❌"
-        await msg.edit_text(
-            f"{emoji} {message}",
-            reply_markup=get_main_keyboard(is_admin(update.effective_user.id)),
-        )
-    finally:
-        bot.close()
+    loop = asyncio.get_event_loop()
 
+    def do_comment():
+        bot_ig = InstagramBot(account_id=account_id)
+        try:
+            ok, media_id = bot_ig.get_media_id_from_url(url)
+            if not ok:
+                return False, f"URL dan media ID olib bo'lmadi: {media_id}"
+            return bot_ig.comment_media(media_id, comment_text)
+        finally:
+            bot_ig.close()
+
+    success, message = await loop.run_in_executor(None, do_comment)
+    emoji = "✅" if success else "❌"
+    await msg.edit_text(
+        f"{emoji} {message}",
+        reply_markup=get_main_keyboard(is_admin(update.effective_user.id)),
+    )
     context.user_data.clear()
     return ConversationHandler.END
 
 
-# ─── Admin panel ──────────────────────────────────────────────────────────────
+# ── Admin panel ───────────────────────────────────────────────────────────────
 
 async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     query = update.callback_query
@@ -327,7 +334,9 @@ async def admin_panel(update: Update, context: ContextTypes.DEFAULT_TYPE):
     db = SessionLocal()
     try:
         total = db.query(InstagramAccount).count()
-        active = db.query(InstagramAccount).filter(InstagramAccount.status == "active").count()
+        active = db.query(InstagramAccount).filter(
+            InstagramAccount.status == "active"
+        ).count()
     finally:
         db.close()
 
@@ -352,8 +361,6 @@ async def main_menu(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ─── Noma'lum xabarlar ────────────────────────────────────────────────────────
-
 async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     await update.message.reply_text(
         "❓ Tushunmadim. /start buyrug'ini yuboring.",
@@ -361,37 +368,61 @@ async def unknown_message(update: Update, context: ContextTypes.DEFAULT_TYPE):
     )
 
 
-# ─── Main ─────────────────────────────────────────────────────────────────────
+async def error_handler(update: object, context: ContextTypes.DEFAULT_TYPE):
+    logger.error(f"Xato: {context.error}", exc_info=context.error)
+
 
 def main():
     init_db()
     logger.info("Ma'lumotlar bazasi tayyor.")
 
-    app = Application.builder().token(BOT_TOKEN).build()
+    app = (
+        Application.builder()
+        .token(BOT_TOKEN)
+        # Conflict xatosini oldini olish uchun
+        .connect_timeout(30)
+        .read_timeout(30)
+        .write_timeout(30)
+        .pool_timeout(30)
+        .build()
+    )
 
-    # Akkaunt qo'shish conversation
+    app.add_error_handler(error_handler)
+
     add_account_conv = ConversationHandler(
         entry_points=[
             CallbackQueryHandler(add_account_start, pattern="^add_account$"),
             CommandHandler("addaccount", add_account_start),
         ],
         states={
-            WAITING_USERNAME: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_username)],
-            WAITING_PASSWORD: [MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_password)],
+            WAITING_USERNAME: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_username)
+            ],
+            WAITING_PASSWORD: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, add_account_password)
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False,
     )
 
-    # Media amal conversation
     media_action_conv = ConversationHandler(
         entry_points=[
-            CallbackQueryHandler(media_action_start, pattern="^(view_reel|like_media|comment_media)$"),
+            CallbackQueryHandler(
+                media_action_start,
+                pattern="^(view_reel|like_media|comment_media)$"
+            ),
         ],
         states={
-            WAITING_MEDIA_URL: [MessageHandler(filters.TEXT & ~filters.COMMAND, media_action_url)],
-            WAITING_COMMENT_TEXT: [MessageHandler(filters.TEXT & ~filters.COMMAND, media_action_comment)],
+            WAITING_MEDIA_URL: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, media_action_url)
+            ],
+            WAITING_COMMENT_TEXT: [
+                MessageHandler(filters.TEXT & ~filters.COMMAND, media_action_comment)
+            ],
         },
         fallbacks=[CommandHandler("cancel", cancel)],
+        per_message=False,
     )
 
     app.add_handler(CommandHandler("start", start))
@@ -405,8 +436,13 @@ def main():
     app.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, unknown_message))
 
     logger.info("Bot ishga tushdi...")
-    app.run_polling(allowed_updates=Update.ALL_TYPES)
+    app.run_polling(
+        allowed_updates=Update.ALL_TYPES,
+        drop_pending_updates=True,   # Eski xabarlarni o'tkazib yuborish
+        close_loop=False,
+    )
 
 
 if __name__ == "__main__":
     main()
+    
